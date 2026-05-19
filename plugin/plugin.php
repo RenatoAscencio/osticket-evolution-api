@@ -11,7 +11,7 @@ return array(
     'version'     => '0.1.0',
     'ost_version' => '1.17',
     'name'        => /* trans */ 'Evolution API Notifications (WhatsApp)',
-    'author'      => 'TVPlus.mx — Renato Ascencio',
+    'author'      => 'Renato Ascencio',
     'description' => /* trans */ 'Sends WhatsApp notifications via Evolution API to both end-users (after verifying their phone has WhatsApp) and admin group(s) on ticket lifecycle events. Each event is independently toggleable.',
     'url'         => 'https://github.com/RenatoAscencio/osticket-evolution-api',
     'plugin'      => 'evolution.php:EvolutionApiNotificationsPlugin',

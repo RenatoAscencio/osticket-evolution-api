@@ -45,3 +45,6 @@ node_modules/
 # Project-specific: secrets that must never be committed
 plugin/config.local.php
 **/credentials.json
+
+# Local Claude Code tooling (agents, commands, settings) — server-specific
+.claude/
