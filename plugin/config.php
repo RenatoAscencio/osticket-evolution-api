@@ -26,8 +26,80 @@ class EvolutionApiNotificationsPluginConfig extends PluginConfig {
         );
     }
 
+    /**
+     * Injects scoped CSS into the plugin config page. osTicket renders
+     * FreeTextField's `content` configuration as raw HTML, which lets us
+     * fix the default zero-padding layout that osTicket ships with for
+     * plugin admin pages.
+     *
+     * The selectors target the plugin config form by descending from the
+     * plugin instance config wrapper, so this CSS never leaks into other
+     * admin pages.
+     */
+    private static function styleInjection() {
+        return '<style>'
+            . '#pluginInstanceForm,'
+            . '.plugin-config form,'
+            . 'form.plugin-config {'
+            . '  padding: 20px 28px 24px 28px;'
+            . '}'
+            . '#pluginInstanceForm table.form_table th,'
+            . '.plugin-config form table.form_table th,'
+            . 'form.plugin-config table.form_table th {'
+            . '  padding: 18px 0 8px 0;'
+            . '}'
+            . '#pluginInstanceForm table.form_table td.label,'
+            . '.plugin-config form table.form_table td.label,'
+            . 'form.plugin-config table.form_table td.label {'
+            . '  padding: 8px 16px 8px 4px;'
+            . '  vertical-align: top;'
+            . '}'
+            . '#pluginInstanceForm table.form_table td:not(.label),'
+            . '.plugin-config form table.form_table td:not(.label),'
+            . 'form.plugin-config table.form_table td:not(.label) {'
+            . '  padding: 8px 4px;'
+            . '}'
+            . '#pluginInstanceForm .section-break,'
+            . '.plugin-config .section-break {'
+            . '  margin-top: 18px;'
+            . '  border-top: 1px solid #e3e3e3;'
+            . '  padding-top: 12px;'
+            . '}'
+            . '#pluginInstanceForm .section-break:first-of-type,'
+            . '.plugin-config .section-break:first-of-type {'
+            . '  border-top: 0;'
+            . '  margin-top: 0;'
+            . '}'
+            . '#pluginInstanceForm .section-break h3,'
+            . '.plugin-config .section-break h3 {'
+            . '  margin: 0 0 6px 0;'
+            . '  font-size: 1.05em;'
+            . '}'
+            . '#pluginInstanceForm .section-break em,'
+            . '.plugin-config .section-break em {'
+            . '  display: block;'
+            . '  color: #666;'
+            . '  font-style: italic;'
+            . '  margin-bottom: 8px;'
+            . '  max-width: 880px;'
+            . '}'
+            . '#pluginInstanceForm .error,'
+            . '.plugin-config .error {'
+            . '  color: #b94a48;'
+            . '  margin-top: 4px;'
+            . '}'
+            . '</style>';
+    }
+
     function getOptions() {
         return array(
+
+            // ─── CSS injection (renders as raw HTML at top of page) ─────────
+            '_styles' => new FreeTextField(array(
+                'configuration' => array(
+                    'content' => self::styleInjection(),
+                ),
+            )),
 
             // ─── Section: Evolution API credentials ─────────────────────────
             'sec_api' => new SectionBreakField(array(
@@ -47,11 +119,11 @@ class EvolutionApiNotificationsPluginConfig extends PluginConfig {
                 'configuration' => array('size' => 40, 'length' => 100),
                 'hint'     => 'Name of the Evolution API instance that holds the WhatsApp session.',
             )),
-            'api_key' => new TextboxField(array(
+            'api_key' => new PasswordField(array(
                 'label'    => 'API key',
                 'required' => true,
                 'configuration' => array('size' => 60, 'length' => 200),
-                'hint'     => 'Sent in every request as the `apikey` header.',
+                'hint'     => 'Sent in every request as the `apikey` header. Masked in the UI after saving — leave blank when editing other fields to preserve the existing value.',
             )),
             'api_verify_ssl' => new BooleanField(array(
                 'label'   => 'Verify SSL certificate',
@@ -222,10 +294,10 @@ class EvolutionApiNotificationsPluginConfig extends PluginConfig {
                 'hint'  => 'Leave the DSN blank to disable Sentry entirely. With a DSN set, plugin errors and Evolution API failures are reported automatically.',
             )),
 
-            'sentry_dsn' => new TextboxField(array(
+            'sentry_dsn' => new PasswordField(array(
                 'label'   => 'Sentry DSN',
                 'configuration' => array('size' => 80, 'length' => 300),
-                'hint'    => 'Format: https://<key>@<host>/<project_id> (e.g. https://abc123…@o0.ingest.sentry.io/12345)',
+                'hint'    => 'Format: https://<key>@<host>/<project_id> (e.g. https://abc123…@o0.ingest.sentry.io/12345). Masked in the UI — contains a secret key.',
             )),
             'sentry_environment' => new TextboxField(array(
                 'label'   => 'Sentry environment',

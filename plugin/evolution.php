@@ -427,8 +427,59 @@ class EvolutionApiNotificationsPlugin extends Plugin {
         }
         $line = '[EvolutionApiNotifications][' . strtoupper($level) . '] ' . $msg;
         if (!empty($ctx)) {
-            $line .= ' ' . json_encode($ctx);
+            $line .= ' ' . json_encode($this->redactContext($ctx));
         }
         error_log($line);
+    }
+
+    /**
+     * Walk a log-context array and redact PII before it hits the shared
+     * error log. The web error log on many hosts is readable by other
+     * tenants or by anyone with web-server filesystem access, so phone
+     * numbers and message bodies should never appear in clear.
+     */
+    private function redactContext($value) {
+        if (is_array($value)) {
+            $out = array();
+            foreach ($value as $k => $v) {
+                if (is_string($k) && in_array(strtolower($k), array('phone', 'number', 'numbers', 'mentioned'), true)) {
+                    $out[$k] = self::maskPhone($v);
+                } elseif (is_string($k) && in_array(strtolower($k), array('text', 'message', 'body'), true)) {
+                    $out[$k] = self::previewText($v);
+                } elseif (is_string($k) && in_array(strtolower($k), array('apikey', 'api_key', 'authorization'), true)) {
+                    $out[$k] = '[REDACTED]';
+                } else {
+                    $out[$k] = $this->redactContext($v);
+                }
+            }
+            return $out;
+        }
+        return $value;
+    }
+
+    private static function maskPhone($v) {
+        if (is_array($v)) {
+            $out = array();
+            foreach ($v as $item) { $out[] = self::maskPhone($item); }
+            return $out;
+        }
+        $s = (string) $v;
+        $len = strlen($s);
+        if ($len <= 4) {
+            return str_repeat('*', $len);
+        }
+        return str_repeat('*', max(0, $len - 4)) . substr($s, -4);
+    }
+
+    private static function previewText($v) {
+        if (!is_scalar($v)) {
+            return '[non-scalar]';
+        }
+        $s = (string) $v;
+        $len = strlen($s);
+        if ($len <= 40) {
+            return '[' . $len . ' chars] ' . preg_replace('/\s+/', ' ', $s);
+        }
+        return '[' . $len . ' chars] ' . preg_replace('/\s+/', ' ', substr($s, 0, 40)) . '…';
     }
 }
