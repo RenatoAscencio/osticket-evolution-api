@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-19
+
 ### Fixed
 - **`model.updated` deduplication was too aggressive.** The previous logic blocked the entire handler after the first invocation per ticket per request, meaning a status change followed by an assignment change in the same request would only fire the first one. Dedup is now per (ticket, change-kind), so distinct changes each fire exactly once.
 - **Admin send pacing actually paces.** The "Delay between admin sends" setting used to be passed as the Evolution API `delay` field in the payload, which only delays delivery on Evolution's side — it did NOT slow our outbound HTTPS calls. The setting now controls a local `usleep()` between consecutive admin sends, which is what avoids burst-hitting Evolution's rate limits.
@@ -47,4 +49,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Plain-text textareas on all message templates — WhatsApp doesn't accept HTML.
 - Emoji-prefixed section headers and language-stable labels.
 
-[Unreleased]: https://github.com/RenatoAscencio/osticket-evolution-api/commits/main
+[Unreleased]: https://github.com/RenatoAscencio/osticket-evolution-api/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/RenatoAscencio/osticket-evolution-api/releases/tag/v0.1.0
