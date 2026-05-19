@@ -14,6 +14,7 @@ require_once dirname(__FILE__) . '/lib/TemplateRenderer.php';
 require_once dirname(__FILE__) . '/lib/EvolutionApiClient.php';
 require_once dirname(__FILE__) . '/lib/WhatsAppNumberCache.php';
 require_once dirname(__FILE__) . '/lib/SentryReporter.php';
+require_once dirname(__FILE__) . '/lib/LogRedactor.php';
 
 class EvolutionApiNotificationsPlugin extends Plugin {
 
@@ -25,8 +26,16 @@ class EvolutionApiNotificationsPlugin extends Plugin {
     private $waCache;
     /** @var EvoSentryReporter */
     private $sentry;
-    /** @var array<string,bool> de-dupe per request for status change handler */
-    private $statusHandled = array();
+    /**
+     * Per-request de-dupe for model.updated. Keyed by "<ticketId>:<changeType>"
+     * where changeType is "status" or "assignment". osTicket can emit
+     * `model.updated` multiple times for the same save(); we only want one
+     * notification per actual change kind, while still allowing different
+     * change kinds in the same request to each fire.
+     *
+     * @var array<string,bool>
+     */
+    private $sentInRequest = array();
 
     function bootstrap() {
         $cfg = $this->getConfig();
@@ -86,6 +95,7 @@ class EvolutionApiNotificationsPlugin extends Plugin {
         );
         $client->setVerifySsl((bool) $cfg->get('api_verify_ssl'));
         $client->setTimeout(max(3, (int) $cfg->get('api_timeout')));
+        $client->setMaxAttempts(max(1, (int) ($cfg->get('http_max_attempts') ?: 3)));
         $self = $this;
         $client->setLogger(function ($lvl, $msg, $ctx) use ($self) {
             $self->log($lvl, '[api] ' . $msg, $ctx);
@@ -148,7 +158,14 @@ class EvolutionApiNotificationsPlugin extends Plugin {
                     $this->sendToClient($ticket, $cfg->get('tpl_client_staff_reply'), $vars);
                 }
                 if ($this->adminShouldFire('evt_staff_reply')) {
-                    $this->sendToAdmins($cfg->get('tpl_admin_user_reply'), $vars);
+                    $tpl = $cfg->get('tpl_admin_staff_reply');
+                    // Backwards compat: fall back to the old combined template
+                    // if an existing install hasn't been resaved since this
+                    // template was added.
+                    if ($tpl === null || $tpl === '') {
+                        $tpl = $cfg->get('tpl_admin_user_reply');
+                    }
+                    $this->sendToAdmins($tpl, $vars);
                 }
             }
             if ($isUser) {
@@ -167,17 +184,19 @@ class EvolutionApiNotificationsPlugin extends Plugin {
         }
         $cfg = $this->getConfig();
         $tid = $model->getId();
-        if (isset($this->statusHandled[$tid])) {
-            return;
-        }
-        $this->statusHandled[$tid] = true;
 
         try {
             $dirty = method_exists($model, 'dirty') ? $model->dirty : array();
             if (!is_array($dirty)) { $dirty = array(); }
 
-            $statusChanged = isset($dirty['status_id']);
-            $assigneeChanged = isset($dirty['staff_id']) || isset($dirty['team_id']);
+            $statusChanged   = isset($dirty['status_id'])
+                && !$this->markOnce($tid, 'status');
+            $assigneeChanged = (isset($dirty['staff_id']) || isset($dirty['team_id']))
+                && !$this->markOnce($tid, 'assignment');
+
+            if (!$statusChanged && !$assigneeChanged) {
+                return;
+            }
 
             $vars = $this->ticketVars($model);
 
@@ -197,6 +216,19 @@ class EvolutionApiNotificationsPlugin extends Plugin {
         } catch (Exception $e) {
             $this->report($e, array('event' => 'model.updated'));
         }
+    }
+
+    /**
+     * Returns true if we already handled this (ticket, changeKind) tuple
+     * in the current request. Otherwise marks it and returns false.
+     */
+    private function markOnce($ticketId, $changeKind) {
+        $key = $ticketId . ':' . $changeKind;
+        if (isset($this->sentInRequest[$key])) {
+            return true;
+        }
+        $this->sentInRequest[$key] = true;
+        return false;
     }
 
     // ─── Senders ─────────────────────────────────────────────────────────────
@@ -259,9 +291,15 @@ class EvolutionApiNotificationsPlugin extends Plugin {
         $text = EvoTemplateRenderer::render($template, $vars);
         $text = EvoTemplateRenderer::truncate($text, 3500);
 
-        $delay = max(0, (int) $cfg->get('send_delay_ms'));
+        $delayMs = max(0, (int) $cfg->get('send_delay_ms'));
         foreach ($list as $i => $phone) {
-            $this->dispatchSend($phone, $text, $i > 0 && $delay > 0 ? array('delay' => $delay) : array());
+            if ($i > 0 && $delayMs > 0) {
+                // usleep takes microseconds. Pace local outbound HTTPS calls
+                // so we don't burst Evolution's rate limit when fanning out to
+                // many admin numbers.
+                usleep($delayMs * 1000);
+            }
+            $this->dispatchSend($phone, $text);
         }
     }
 
@@ -505,17 +543,30 @@ class EvolutionApiNotificationsPlugin extends Plugin {
 
     private function getUserPhone(Ticket $ticket) {
         try {
-            if (method_exists($ticket, 'getOwner')) {
-                $owner = $ticket->getOwner();
-                if ($owner && method_exists($owner, 'getPhoneNumber')) {
+            $owner = method_exists($ticket, 'getOwner') ? $ticket->getOwner() : null;
+
+            // Strategy 1: custom user-form field if configured.
+            $customVar = trim((string) $this->getConfig()->get('phone_field_variable'));
+            if ($customVar !== '' && $owner) {
+                $v = $this->readUserCustomField($owner, $customVar);
+                if ($v !== null && $v !== '' && !is_array($v)) {
+                    return (string) $v;
+                }
+            }
+
+            // Strategy 2: built-in getters on User.
+            if ($owner) {
+                if (method_exists($owner, 'getPhoneNumber')) {
                     $p = $owner->getPhoneNumber();
                     if ($p) { return (string) $p; }
                 }
-                if ($owner && method_exists($owner, 'getPhone')) {
+                if (method_exists($owner, 'getPhone')) {
                     $p = $owner->getPhone();
                     if ($p) { return (string) $p; }
                 }
             }
+
+            // Strategy 3: ticket-level phone (legacy/embedded form data).
             if (method_exists($ticket, 'getPhoneNumber')) {
                 $p = $ticket->getPhoneNumber();
                 if ($p) { return (string) $p; }
@@ -593,59 +644,8 @@ class EvolutionApiNotificationsPlugin extends Plugin {
         }
         $line = '[EvolutionApiNotifications][' . strtoupper($level) . '] ' . $msg;
         if (!empty($ctx)) {
-            $line .= ' ' . json_encode($this->redactContext($ctx));
+            $line .= ' ' . json_encode(EvoLogRedactor::context($ctx));
         }
         error_log($line);
-    }
-
-    /**
-     * Walk a log-context array and redact PII before it hits the shared
-     * error log. The web error log on many hosts is readable by other
-     * tenants or by anyone with web-server filesystem access, so phone
-     * numbers and message bodies should never appear in clear.
-     */
-    private function redactContext($value) {
-        if (is_array($value)) {
-            $out = array();
-            foreach ($value as $k => $v) {
-                if (is_string($k) && in_array(strtolower($k), array('phone', 'number', 'numbers', 'mentioned'), true)) {
-                    $out[$k] = self::maskPhone($v);
-                } elseif (is_string($k) && in_array(strtolower($k), array('text', 'message', 'body'), true)) {
-                    $out[$k] = self::previewText($v);
-                } elseif (is_string($k) && in_array(strtolower($k), array('apikey', 'api_key', 'authorization'), true)) {
-                    $out[$k] = '[REDACTED]';
-                } else {
-                    $out[$k] = $this->redactContext($v);
-                }
-            }
-            return $out;
-        }
-        return $value;
-    }
-
-    private static function maskPhone($v) {
-        if (is_array($v)) {
-            $out = array();
-            foreach ($v as $item) { $out[] = self::maskPhone($item); }
-            return $out;
-        }
-        $s = (string) $v;
-        $len = strlen($s);
-        if ($len <= 4) {
-            return str_repeat('*', $len);
-        }
-        return str_repeat('*', max(0, $len - 4)) . substr($s, -4);
-    }
-
-    private static function previewText($v) {
-        if (!is_scalar($v)) {
-            return '[non-scalar]';
-        }
-        $s = (string) $v;
-        $len = strlen($s);
-        if ($len <= 40) {
-            return '[' . $len . ' chars] ' . preg_replace('/\s+/', ' ', $s);
-        }
-        return '[' . $len . ' chars] ' . preg_replace('/\s+/', ' ', substr($s, 0, 40)) . '…';
     }
 }

@@ -138,6 +138,12 @@ class EvolutionApiNotificationsPluginConfig extends PluginConfig {
                 'configuration' => array('size' => 6, 'length' => 4),
                 'hint'     => 'Total time allowed per Evolution API request. Default 15. Minimum effective value 3.',
             )),
+            'http_max_attempts' => new TextboxField(array(
+                'label'    => 'Max HTTP attempts (incl. retries)',
+                'default'  => '3',
+                'configuration' => array('size' => 4, 'length' => 2),
+                'hint'     => 'How many times to attempt each Evolution API call when the response is a transient failure (network error, 429 rate limit, or 5xx). Backs off exponentially (1s · 2s · 4s) and honors the `Retry-After` header when present. 1 disables retries.',
+            )),
 
             // ─── Section: Phone numbers ─────────────────────────────────────
             'sec_phone' => new SectionBreakField(array(
@@ -150,6 +156,11 @@ class EvolutionApiNotificationsPluginConfig extends PluginConfig {
                 'default'  => '52',
                 'configuration' => array('size' => 6, 'length' => 4),
                 'hint'     => 'Digits only, no plus sign. Used when a customer phone has no country code. Examples: 52 Mexico · 1 USA/Canada · 54 Argentina · 57 Colombia.',
+            )),
+            'phone_field_variable' => new TextboxField(array(
+                'label'   => 'Custom phone-field variable name (optional)',
+                'configuration' => array('size' => 40, 'length' => 80),
+                'hint'    => 'If your osTicket setup stores the customer phone in a custom field of the Contact Information form (rather than the default Phone), put its variable name here. Leave blank to use the standard getPhoneNumber()/getPhone() lookup.',
             )),
             'verify_whatsapp_before_send' => new BooleanField(array(
                 'label'   => 'Check WhatsApp before sending to clients',
@@ -308,8 +319,14 @@ class EvolutionApiNotificationsPluginConfig extends PluginConfig {
             )),
             'tpl_admin_user_reply' => new TextareaField(array(
                 'label'   => 'To admin — customer replied',
-                'default' => "*Reply on ticket #{{ticket_number}}*\n*From:* {{name}} ({{poster_type}})\n\n{{message}}\n\n{{ticket_link}}",
+                'default' => "*Reply on ticket #{{ticket_number}}*\n*From customer:* {{name}}\n\n{{message}}\n\n{{ticket_link}}",
                 'configuration' => self::plainTextarea(6, 60),
+            )),
+            'tpl_admin_staff_reply' => new TextareaField(array(
+                'label'   => 'To admin — staff replied',
+                'default' => "*Staff reply on ticket #{{ticket_number}}*\n*By:* {{name}}\n\n{{message}}\n\n{{ticket_link}}",
+                'configuration' => self::plainTextarea(6, 60),
+                'hint'    => 'Only used when "Staff reply → notify admins" is enabled (off by default). Useful for ops teams that want a full audit trail to a shared group chat.',
             )),
             'tpl_admin_status' => new TextareaField(array(
                 'label'   => 'To admin — status changed',

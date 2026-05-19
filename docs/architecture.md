@@ -59,9 +59,10 @@
 | `config.php` | UI fields + validation. No business logic. |
 | `lib/PhoneNumberNormalizer.php` | Pure: any input string → digits-only E.164 (no "+") or `null`. |
 | `lib/TemplateRenderer.php` | Pure: `{{var}}`/`{{var\|fallback}}` substitution; HTML → WhatsApp-compatible plain text; UTF-8 safe truncation. |
-| `lib/EvolutionApiClient.php` | All HTTP to Evolution API. Returns uniform `{ok, status, body, error}`. No state across calls. |
+| `lib/EvolutionApiClient.php` | All HTTP to Evolution API. Returns uniform `{ok, status, body, error}`. Retries 429/5xx/network errors with exponential backoff + `Retry-After`. No state across calls. |
 | `lib/WhatsAppNumberCache.php` | DB persistence for `isOnWhatsApp` results with separate hit/miss TTL. Auto-creates its table on first use. |
 | `lib/SentryReporter.php` | Optional. Parses DSN, POSTs events to `/store/`. No-op when DSN is empty. |
+| `lib/LogRedactor.php` | Pure: walks log-context arrays and masks phones (last-4-digits), truncates message bodies (`[N chars] preview…`), redacts secrets (`apikey`/`api_key`/`authorization`/`token`). |
 
 ## Concurrency & ordering
 
@@ -76,11 +77,13 @@ If sending becomes a bottleneck, the right next step is to push sends onto an as
 
 | Scenario | Behavior |
 | -------- | -------- |
-| Evolution API unreachable | `EvolutionApiClient::call()` returns `{ok:false}`; dispatcher logs at `error`; Sentry message dispatched if DSN set. The osTicket request itself does not fail. |
-| `whatsappNumbers` returns unknown | `isOnWhatsApp()` returns `null`; dispatcher **fails open** and attempts the send anyway (the user's request to be notified is more important than saving one API call). |
+| Evolution API unreachable / transient 5xx / 429 | `EvolutionApiClient` retries up to `http_max_attempts` times (default 3) with exponential backoff (1s · 2s · 4s, capped at 4s). `Retry-After` is honored if present. If all attempts fail, dispatcher logs at `error`; Sentry message dispatched if DSN set. The osTicket request itself does not fail. |
+| `whatsappNumbers` returns unknown after retries | `isOnWhatsApp()` returns `null`; dispatcher **fails open** and attempts the send anyway (the user's request to be notified is more important than saving one API call). |
 | Invalid phone on user record | `PhoneNumberNormalizer::normalize()` returns `null`; client send is skipped, debug log records the raw value. Admin sends are unaffected. |
+| Customer opted out via user profile field | `sendToClient()` returns early **before any phone normalization or API call**; logged at `info` level. Admin sends are unaffected. |
 | Sentry DSN invalid | `EvoSentryReporter::parseDsn()` returns `null`; reporter silently no-ops. |
 | Cache table creation failure (e.g. DB permissions) | The first `db_query` returns false; subsequent gets/puts return null/skip. Plugin continues without cache (slower but functional). |
+| Multiple `model.updated` for same Ticket in one request | Per-(ticket, change-kind) dedup ensures each kind of change fires exactly once. A status change followed by an assignment change in the same request will fire both notifications; two consecutive saves both touching the status field will fire one. |
 
 ## Why not the official Sentry SDK?
 

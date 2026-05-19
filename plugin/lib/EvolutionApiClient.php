@@ -21,6 +21,10 @@ class EvolutionApiClient {
     private $timeout = 30;
     private $verifySsl = true;
     private $logger;
+    /** Max attempts for retryable failures (429 + 5xx). 1 = no retry. */
+    private $maxAttempts = 3;
+    /** Cap on backoff between retries (ms) — prevents long blocking. */
+    private $maxBackoffMs = 4000;
 
     public function __construct($baseUrl, $instance, $apiKey) {
         $this->baseUrl  = rtrim((string) $baseUrl, '/');
@@ -28,9 +32,11 @@ class EvolutionApiClient {
         $this->apiKey   = (string) $apiKey;
     }
 
-    public function setVerifySsl($verify) { $this->verifySsl = (bool) $verify; }
-    public function setTimeout($seconds)  { $this->timeout = (int) $seconds; }
-    public function setLogger($cb)        { $this->logger = is_callable($cb) ? $cb : null; }
+    public function setVerifySsl($verify)    { $this->verifySsl = (bool) $verify; }
+    public function setTimeout($seconds)     { $this->timeout = (int) $seconds; }
+    public function setLogger($cb)           { $this->logger = is_callable($cb) ? $cb : null; }
+    public function setMaxAttempts($n)       { $this->maxAttempts = max(1, (int) $n); }
+    public function setMaxBackoffMs($ms)     { $this->maxBackoffMs = max(0, (int) $ms); }
 
     /**
      * Send a plain-text WhatsApp message.
@@ -89,10 +95,56 @@ class EvolutionApiClient {
     }
 
     /**
-     * Low-level HTTP request via cURL. Returns a uniform result envelope:
-     *   array(ok, status, body, error)
+     * Entry point used by sendText / whatsappNumbers / connectionState.
+     * Wraps the low-level HTTP call with a retry loop that handles 429 and
+     * 5xx with exponential backoff, honoring `Retry-After` when present.
      */
     private function call($method, $path, $payload = null) {
+        $last = null;
+        for ($attempt = 1; $attempt <= $this->maxAttempts; $attempt++) {
+            $last = $this->httpCall($method, $path, $payload);
+            if ($last['ok']) {
+                return $last;
+            }
+
+            $status = (int) $last['status'];
+            // Only retry transient failures: network errors (status=0), 429 (rate limit), 5xx.
+            $isRetryable = ($status === 0 || $status === 429 || $status >= 500);
+            if (!$isRetryable || $attempt >= $this->maxAttempts) {
+                return $last;
+            }
+
+            $sleepMs = $this->backoffMs($attempt, $last);
+            $this->log('warning', 'Retrying after backoff', array(
+                'attempt' => $attempt,
+                'next_attempt' => $attempt + 1,
+                'status' => $status,
+                'sleep_ms' => $sleepMs,
+            ));
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+        }
+        return $last;
+    }
+
+    /**
+     * Backoff calculation. Prefers `Retry-After` from the server response;
+     * falls back to exponential (1s, 2s, 4s …) capped at maxBackoffMs.
+     */
+    private function backoffMs($attempt, array $result) {
+        if (isset($result['retry_after_ms']) && $result['retry_after_ms'] > 0) {
+            return min($this->maxBackoffMs, (int) $result['retry_after_ms']);
+        }
+        $exp = (1 << ($attempt - 1)) * 1000; // 1000, 2000, 4000, ...
+        return min($this->maxBackoffMs, $exp);
+    }
+
+    /**
+     * Low-level HTTP request via cURL. Returns a uniform result envelope:
+     *   array(ok, status, body, error, retry_after_ms?)
+     */
+    private function httpCall($method, $path, $payload = null) {
         $url = $this->baseUrl . $path;
         $method = strtoupper($method);
 
@@ -107,6 +159,18 @@ class EvolutionApiClient {
         curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, $this->verifySsl);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, $this->verifySsl ? 2 : 0);
+
+        // Capture response headers (we want Retry-After for 429 / 503).
+        $respHeaders = array();
+        curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($_ch, $line) use (&$respHeaders) {
+            $colon = strpos($line, ':');
+            if ($colon !== false) {
+                $name  = strtolower(trim(substr($line, 0, $colon)));
+                $value = trim(substr($line, $colon + 1));
+                $respHeaders[$name] = $value;
+            }
+            return strlen($line);
+        });
 
         $headers = array(
             'apikey: ' . $this->apiKey,
@@ -153,12 +217,28 @@ class EvolutionApiClient {
             ));
         }
 
-        return array(
+        $result = array(
             'ok'     => $ok,
             'status' => $status,
             'body'   => is_array($decoded) ? $decoded : null,
             'error'  => $ok ? null : ('HTTP ' . $status . ': ' . substr((string) $raw, 0, 200)),
         );
+
+        // Pass Retry-After (in ms) up to the retry orchestrator if present.
+        // RFC 7231 §7.1.3: value is either delta-seconds or an HTTP-date.
+        if (isset($respHeaders['retry-after'])) {
+            $ra = $respHeaders['retry-after'];
+            if (ctype_digit($ra)) {
+                $result['retry_after_ms'] = ((int) $ra) * 1000;
+            } else {
+                $ts = strtotime($ra);
+                if ($ts !== false) {
+                    $result['retry_after_ms'] = max(0, ($ts - time())) * 1000;
+                }
+            }
+        }
+
+        return $result;
     }
 
     private function fail($status, $msg) {

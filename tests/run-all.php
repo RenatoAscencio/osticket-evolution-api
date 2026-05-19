@@ -8,6 +8,8 @@ $dir = __DIR__;
 $tests = array(
     $dir . '/PhoneNumberNormalizerTest.php',
     $dir . '/TemplateRendererTest.php',
+    $dir . '/SentryReporterTest.php',
+    $dir . '/LogRedactorTest.php',
 );
 
 $shellRun = 'ex' . 'ec';

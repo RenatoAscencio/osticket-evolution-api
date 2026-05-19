@@ -36,6 +36,8 @@ jobs:
           set -e
           php tests/PhoneNumberNormalizerTest.php
           php tests/TemplateRendererTest.php
+          php tests/SentryReporterTest.php
+          php tests/LogRedactorTest.php
 
   docker-build:
     name: Docker build smoke
