@@ -106,6 +106,23 @@ It does **not**:
 - Sentry events include only metadata tags (event name, exception class,
   HTTP status). Ticket bodies and phone numbers are **never** sent to Sentry.
 
+### Customer opt-in (privacy)
+
+The plugin supports a per-customer opt-in mechanism via a custom checkbox
+on the osTicket Contact Information form (variable name configurable,
+default `whatsapp_opt_in`). When the field is present and unchecked, the
+plugin returns from `sendToClient()` **before any phone normalization or
+Evolution API call**, so the customer's phone is never transmitted off-host
+once they have opted out. Admin notifications are unaffected by this
+toggle — the opt-in covers the customer's own privacy preference, not the
+operator's internal ops needs.
+
+When the field is absent on a given user record (legacy users, admin has
+not yet added the field, or the user has never edited their profile), the
+plugin falls back to the `opt_in_default_when_absent` setting. The
+recommended default is **opt-in** to preserve continuity for existing
+customers; switch to **opt-out** for strict GDPR-style privacy-by-default.
+
 ### Caching
 
 - The WhatsApp cache table contains phone numbers and a boolean

@@ -14,15 +14,19 @@ Plugin de osTicket que envía notificaciones por **WhatsApp** a través de [Evol
 
 - **Notifica a clientes y admins por separado.** Los usuarios reciben mensajes en su WhatsApp; los admins reciben en una lista configurable de números.
 - **Verificación previa de WhatsApp.** Antes de enviar a un cliente, el plugin consulta a Evolution API si ese número existe en WhatsApp y cachea la respuesta. Se acabaron los envíos perdidos.
-- **Eventos configurables uno por uno:**
-  - Ticket creado
-  - Respuesta del cliente/usuario
-  - Respuesta del staff
-  - Cambio de estado (abierto / cerrado / resuelto)
-  - Cambio de asignación
+- **Matriz evento × audiencia.** Toggle independiente para cada combinación, ej. "Ticket creado → notificar cliente ON, → notificar admins ON" vs "Cambio de estado → notificar cliente ON, → notificar admins OFF":
+  - Ticket creado → cliente / admin
+  - Respuesta del cliente → admin
+  - Respuesta del staff → cliente / admin
+  - Cambio de estado → cliente / admin
+  - Cambio de asignación → admin
+- **Opt-in por cliente (privacidad).** Opcional: añade un checkbox al formulario de usuario para que cada cliente active/desactive las notificaciones WhatsApp desde su perfil de osTicket. Ver [docs/user-opt-in.md](./docs/user-opt-in.md).
 - **Plantillas dobles.** Cada evento tiene plantillas independientes para cliente y para admin, con tono y contenido distintos.
 - **Normalización de teléfonos.** Acepta cualquier formato (espacios, guiones, `+`, paréntesis, ceros, prefijos nacionales) y normaliza a E.164 sólo dígitos.
+- **Credenciales enmascaradas.** API key y Sentry DSN son `PasswordField` — no se muestran en la UI después de guardar.
+- **Redacción de PII en logs.** Números de teléfono y mensajes se enmascaran/truncan en el log de PHP incluso con logging detallado activo. Seguro para hosting compartido.
 - **Integración opcional con Sentry.** Errores del plugin — y opcionalmente todos los errores PHP de osTicket — pueden reportarse a Sentry. Sin Composer (cliente mínimo de envelope).
+- **Revisión de seguridad incluida.** Ver [SECURITY.md](./SECURITY.md) para threat model, trust boundaries y accepted risks.
 - **Pensado para PR upstream.** Estilo y licencia (GPL-2.0) acordes al repo oficial `osTicket/osTicket-plugins`.
 
 ---

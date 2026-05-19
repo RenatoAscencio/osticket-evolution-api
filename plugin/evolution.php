@@ -39,16 +39,37 @@ class EvolutionApiNotificationsPlugin extends Plugin {
             $this->installGlobalSentryHandlers();
         }
 
-        if ($cfg->get('evt_ticket_created')) {
+        if ($this->anyOn('evt_ticket_created__client', 'evt_ticket_created__admin')) {
             Signal::connect('ticket.created',     array($this, 'onTicketCreated'));
         }
-        if ($cfg->get('evt_user_reply') || $cfg->get('evt_staff_reply')) {
+        if ($this->anyOn('evt_user_reply__admin', 'evt_staff_reply__client', 'evt_staff_reply__admin')) {
             Signal::connect('threadentry.created', array($this, 'onThreadEntryCreated'));
         }
-        if ($cfg->get('evt_status_changed') || $cfg->get('evt_assignment_changed')) {
+        if ($this->anyOn('evt_status_changed__client', 'evt_status_changed__admin', 'evt_assignment_changed__admin')) {
             // osTicket emits model.updated on Ticket; handler inspects what changed.
             Signal::connect('model.updated', array($this, 'onModelUpdated'));
         }
+    }
+
+    /** Helper: returns true if any of the listed config flags is truthy. */
+    private function anyOn(/* ...keys */) {
+        $cfg = $this->getConfig();
+        foreach (func_get_args() as $k) {
+            if ($cfg->get($k)) { return true; }
+        }
+        return false;
+    }
+
+    /** True if both the master switch AND the per-event flag are on. */
+    private function clientShouldFire($eventKey) {
+        $cfg = $this->getConfig();
+        return $cfg->get('notify_clients') && $cfg->get($eventKey . '__client');
+    }
+
+    /** True if both the master switch AND the per-event flag are on. */
+    private function adminShouldFire($eventKey) {
+        $cfg = $this->getConfig();
+        return $cfg->get('notify_admins') && $cfg->get($eventKey . '__admin');
     }
 
     // ─── Lazy dependencies ───────────────────────────────────────────────────
@@ -88,15 +109,14 @@ class EvolutionApiNotificationsPlugin extends Plugin {
 
     function onTicketCreated($ticket) {
         $cfg = $this->getConfig();
-        if (!$cfg->get('evt_ticket_created')) { return; }
         try {
             $vars = $this->ticketVars($ticket);
             $vars['message'] = $this->firstMessage($ticket);
 
-            if ($cfg->get('notify_clients')) {
+            if ($this->clientShouldFire('evt_ticket_created')) {
                 $this->sendToClient($ticket, $cfg->get('tpl_client_created'), $vars);
             }
-            if ($cfg->get('notify_admins')) {
+            if ($this->adminShouldFire('evt_ticket_created')) {
                 $this->sendToAdmins($cfg->get('tpl_admin_created'), $vars);
             }
         } catch (Exception $e) {
@@ -123,13 +143,16 @@ class EvolutionApiNotificationsPlugin extends Plugin {
                 EvoTemplateRenderer::htmlToWhatsappText($entry->getBody()), 2500
             );
 
-            if ($isStaff && $cfg->get('evt_staff_reply')) {
-                if ($cfg->get('notify_clients')) {
+            if ($isStaff) {
+                if ($this->clientShouldFire('evt_staff_reply')) {
                     $this->sendToClient($ticket, $cfg->get('tpl_client_staff_reply'), $vars);
                 }
+                if ($this->adminShouldFire('evt_staff_reply')) {
+                    $this->sendToAdmins($cfg->get('tpl_admin_user_reply'), $vars);
+                }
             }
-            if ($isUser && $cfg->get('evt_user_reply')) {
-                if ($cfg->get('notify_admins')) {
+            if ($isUser) {
+                if ($this->adminShouldFire('evt_user_reply')) {
                     $this->sendToAdmins($cfg->get('tpl_admin_user_reply'), $vars);
                 }
             }
@@ -158,16 +181,16 @@ class EvolutionApiNotificationsPlugin extends Plugin {
 
             $vars = $this->ticketVars($model);
 
-            if ($statusChanged && $cfg->get('evt_status_changed')) {
-                if ($cfg->get('notify_clients')) {
+            if ($statusChanged) {
+                if ($this->clientShouldFire('evt_status_changed')) {
                     $this->sendToClient($model, $cfg->get('tpl_client_status'), $vars);
                 }
-                if ($cfg->get('notify_admins')) {
+                if ($this->adminShouldFire('evt_status_changed')) {
                     $this->sendToAdmins($cfg->get('tpl_admin_status'), $vars);
                 }
             }
-            if ($assigneeChanged && $cfg->get('evt_assignment_changed')) {
-                if ($cfg->get('notify_admins')) {
+            if ($assigneeChanged) {
+                if ($this->adminShouldFire('evt_assignment_changed')) {
                     $this->sendToAdmins($cfg->get('tpl_admin_assignment'), $vars);
                 }
             }
@@ -180,6 +203,17 @@ class EvolutionApiNotificationsPlugin extends Plugin {
 
     private function sendToClient($ticket, $template, array $vars) {
         $cfg = $this->getConfig();
+
+        // Honor the customer's opt-in preference (if the feature is enabled).
+        if ($cfg->get('respect_user_opt_in')) {
+            $optIn = $this->userOptedIn($ticket);
+            if ($optIn === false) {
+                $this->log('info', 'Customer opted out of WhatsApp notifications — skipping ticket #' . $vars['ticket_number']);
+                return;
+            }
+            // $optIn === null means the field is absent; fall back to default.
+        }
+
         $rawPhone = $this->getUserPhone($ticket);
         if (!$rawPhone) {
             $this->log('debug', 'No phone for ticket #' . $vars['ticket_number']);
@@ -335,6 +369,138 @@ class EvolutionApiNotificationsPlugin extends Plugin {
         } catch (Exception $e) {
             return '';
         }
+    }
+
+    /**
+     * Read the customer's opt-in preference from a custom field on their
+     * osTicket user profile. The admin defines a checkbox field with a
+     * configurable variable name (default `whatsapp_opt_in`) on the
+     * Contact Information form.
+     *
+     * Returns:
+     *   true  → customer explicitly opted in
+     *   false → customer explicitly opted out (skip the send)
+     *   null  → no preference set (fall back to opt_in_default_when_absent)
+     */
+    private function userOptedIn(Ticket $ticket) {
+        $cfg = $this->getConfig();
+        $variable = trim((string) $cfg->get('opt_in_field_variable'));
+        if ($variable === '') { $variable = 'whatsapp_opt_in'; }
+
+        $defaultWhenAbsent = (bool) $cfg->get('opt_in_default_when_absent');
+
+        try {
+            $owner = method_exists($ticket, 'getOwner') ? $ticket->getOwner() : null;
+            if (!$owner) {
+                return $defaultWhenAbsent ? null : false;
+            }
+            $value = $this->readUserCustomField($owner, $variable);
+            if ($value === null) {
+                // Field not present on user profile.
+                return $defaultWhenAbsent ? null : false;
+            }
+            return $this->coerceBool($value);
+        } catch (Exception $e) {
+            $this->log('warning', 'Failed reading opt-in field "' . $variable . '" — failing open', array('exception' => $e->getMessage()));
+            return null;
+        }
+    }
+
+    /**
+     * Walk a user's dynamic form entries and return the raw value of the
+     * field with the given variable name. Returns null when not found.
+     */
+    private function readUserCustomField($user, $variable) {
+        // Different osTicket versions expose this differently. Try the most
+        // common APIs in order of preference.
+
+        // (1) Newer API: User::getForms() returns an iterable of DynamicFormEntry.
+        if (method_exists($user, 'getForms')) {
+            try {
+                $forms = $user->getForms();
+                if ($forms) {
+                    foreach ($forms as $entry) {
+                        $v = $this->extractFieldFromEntry($entry, $variable);
+                        if ($v !== null) { return $v; }
+                    }
+                }
+            } catch (Exception $e) { /* fall through to next strategy */ }
+        }
+
+        // (2) Older API: User::getDynamicData() returns an array of entries.
+        if (method_exists($user, 'getDynamicData')) {
+            try {
+                $entries = $user->getDynamicData();
+                if ($entries) {
+                    foreach ($entries as $entry) {
+                        $v = $this->extractFieldFromEntry($entry, $variable);
+                        if ($v !== null) { return $v; }
+                    }
+                }
+            } catch (Exception $e) { /* fall through */ }
+        }
+
+        // (3) Some plugins/skins attach a getInfo() helper.
+        if (method_exists($user, 'getInfo')) {
+            try {
+                $info = $user->getInfo();
+                if (is_array($info) && array_key_exists($variable, $info)) {
+                    return $info[$variable];
+                }
+            } catch (Exception $e) { /* fall through */ }
+        }
+
+        return null;
+    }
+
+    private function extractFieldFromEntry($entry, $variable) {
+        if (!is_object($entry)) { return null; }
+
+        // FormEntry typically exposes getField($variable_name).
+        if (method_exists($entry, 'getField')) {
+            try {
+                $field = $entry->getField($variable);
+                if ($field && method_exists($field, 'getClean')) {
+                    return $field->getClean();
+                }
+                if ($field && method_exists($field, 'getValue')) {
+                    return $field->getValue();
+                }
+            } catch (Exception $e) { /* fall through */ }
+        }
+
+        // Some entries expose getAnswers() → iterable of {field, value}.
+        if (method_exists($entry, 'getAnswers')) {
+            try {
+                foreach ($entry->getAnswers() as $answer) {
+                    if (!is_object($answer)) { continue; }
+                    $field = method_exists($answer, 'getField') ? $answer->getField() : null;
+                    $name = $field && method_exists($field, 'get') ? $field->get('name') : null;
+                    if ($name === $variable) {
+                        if (method_exists($answer, 'getValue')) {
+                            return $answer->getValue();
+                        }
+                    }
+                }
+            } catch (Exception $e) { /* fall through */ }
+        }
+
+        return null;
+    }
+
+    private function coerceBool($value) {
+        if (is_bool($value)) { return $value; }
+        if (is_numeric($value)) { return ((int) $value) !== 0; }
+        if (is_string($value)) {
+            $v = strtolower(trim($value));
+            if ($v === '' || $v === '0' || $v === 'false' || $v === 'no' || $v === 'off') { return false; }
+            return true;
+        }
+        if (is_array($value)) {
+            // Checkbox fields in osTicket return [1] when checked, [] when unchecked.
+            return !empty($value);
+        }
+        return (bool) $value;
     }
 
     private function getUserPhone(Ticket $ticket) {

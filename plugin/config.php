@@ -171,24 +171,24 @@ class EvolutionApiNotificationsPluginConfig extends PluginConfig {
                 'hint'    => 'How long to remember a number is NOT on WhatsApp before re-checking. Default 86400 = 1 day. Shorter so customers who later install WhatsApp eventually get notifications.',
             )),
 
-            // ─── Section: Recipients ────────────────────────────────────────
+            // ─── Section: Master recipient toggles ──────────────────────────
             'sec_recipients' => new SectionBreakField(array(
-                'label' => '👥  Who receives notifications',
-                'hint'  => 'Independently enable or disable client and admin notifications. Each event below can also be toggled separately.',
+                'label' => '👥  Recipients — master switches',
+                'hint'  => 'These are kill-switches that apply to every event. To turn off all customer notifications globally, uncheck "Notify customers". The per-event toggles below only apply when the corresponding master switch is on.',
             )),
 
             'notify_clients' => new BooleanField(array(
                 'label'   => 'Notify customers (end users)',
                 'default' => true,
                 'configuration' => array(
-                    'desc' => 'Send messages to the WhatsApp number associated with the ticket owner.',
+                    'desc' => 'Master switch for ALL customer notifications. When off, customers never get a WhatsApp message regardless of per-event settings.',
                 ),
             )),
             'notify_admins' => new BooleanField(array(
                 'label'   => 'Notify staff/admins',
                 'default' => true,
                 'configuration' => array(
-                    'desc' => 'Send a copy of every enabled event to the admin numbers below.',
+                    'desc' => 'Master switch for ALL admin notifications. When off, the admin numbers below never receive a message.',
                 ),
             )),
             'admin_numbers' => new TextareaField(array(
@@ -197,36 +197,87 @@ class EvolutionApiNotificationsPluginConfig extends PluginConfig {
                 'hint'     => 'One number per line. International format with country code, no plus sign. Example for Mexico: 5215555555555',
             )),
 
-            // ─── Section: Events ─────────────────────────────────────────────
-            'sec_events' => new SectionBreakField(array(
-                'label' => '🔔  Events that trigger a notification',
-                'hint'  => 'Each event can be toggled on/off independently for client AND admin notifications.',
+            // ─── Section: User opt-in (privacy) ─────────────────────────────
+            'sec_optin' => new SectionBreakField(array(
+                'label' => '🙋  User opt-in (per-customer preference)',
+                'hint'  => 'Optional. Lets each customer decide whether to receive WhatsApp notifications by toggling a field on their own osTicket profile. To enable this, an admin must add a checkbox field with the variable name below to the "Contact Information" form (Admin Panel → Manage → Forms → Contact Information → Add new field). See docs/user-opt-in.md in the plugin repository for step-by-step instructions.',
             )),
 
-            'evt_ticket_created' => new BooleanField(array(
-                'label'   => 'Ticket created',
+            'respect_user_opt_in' => new BooleanField(array(
+                'label'   => 'Respect customer opt-in preference',
                 'default' => true,
-                'configuration' => array('desc' => 'A new ticket was opened (via web, email or API).'),
+                'configuration' => array(
+                    'desc' => 'When on, look up the custom field below on the customer\'s profile before sending. Skip the send if the customer has explicitly opted out.',
+                ),
             )),
-            'evt_user_reply' => new BooleanField(array(
-                'label'   => 'Customer reply',
+            'opt_in_field_variable' => new TextboxField(array(
+                'label'    => 'Opt-in field variable name',
+                'default'  => 'whatsapp_opt_in',
+                'configuration' => array('size' => 40, 'length' => 80),
+                'hint'     => 'The "Variable Name" you set on the checkbox field in the user form. Default: whatsapp_opt_in',
+            )),
+            'opt_in_default_when_absent' => new BooleanField(array(
+                'label'   => 'Default to opt-IN when field is absent',
                 'default' => true,
-                'configuration' => array('desc' => 'The customer (or a collaborator) posted a reply to an existing ticket. Notifies admins.'),
+                'configuration' => array(
+                    'desc' => 'When the customer\'s profile does not contain the opt-in field (e.g. existing customers, admin has not added the field yet, or the customer never edited their profile), what should the plugin assume? Default: opt-IN (send the notification).',
+                ),
             )),
-            'evt_staff_reply' => new BooleanField(array(
-                'label'   => 'Staff reply',
+
+            // ─── Section: Per-event notifications matrix ────────────────────
+            'sec_events' => new SectionBreakField(array(
+                'label' => '🔔  Per-event notification matrix',
+                'hint'  => 'Independent toggle per audience per event. Each event sends to customer, admin, both, or neither. Greyed-out combinations (e.g. notifying the customer of their own reply) are not exposed.',
+            )),
+
+            // Event: Ticket created
+            'evt_ticket_created__client' => new BooleanField(array(
+                'label'   => 'Ticket created → notify customer',
                 'default' => true,
-                'configuration' => array('desc' => 'A staff member replied to a ticket. Notifies the customer.'),
+                'configuration' => array('desc' => 'Customer gets a WhatsApp confirmation that their ticket was received.'),
             )),
-            'evt_status_changed' => new BooleanField(array(
-                'label'   => 'Status changed',
+            'evt_ticket_created__admin' => new BooleanField(array(
+                'label'   => 'Ticket created → notify admins',
                 'default' => true,
-                'configuration' => array('desc' => 'Ticket moved between statuses (Open / Resolved / Closed / etc.).'),
+                'configuration' => array('desc' => 'Admins receive a heads-up for every new ticket.'),
             )),
-            'evt_assignment_changed' => new BooleanField(array(
-                'label'   => 'Assignment changed',
+
+            // Event: Customer reply (no client notification — the client is the poster)
+            'evt_user_reply__admin' => new BooleanField(array(
+                'label'   => 'Customer reply → notify admins',
+                'default' => true,
+                'configuration' => array('desc' => 'Admins are pinged when the customer adds a new message to an existing ticket.'),
+            )),
+
+            // Event: Staff reply
+            'evt_staff_reply__client' => new BooleanField(array(
+                'label'   => 'Staff reply → notify customer',
+                'default' => true,
+                'configuration' => array('desc' => 'Customer gets a WhatsApp ping when staff replies.'),
+            )),
+            'evt_staff_reply__admin' => new BooleanField(array(
+                'label'   => 'Staff reply → notify admins',
                 'default' => false,
-                'configuration' => array('desc' => 'Ticket was assigned (or reassigned) to a staff member or team. Off by default — usually only useful for ops dashboards.'),
+                'configuration' => array('desc' => 'Rare. Off by default — staff who replied already knows. Turn on only for ops teams that want a complete audit trail to a shared group.'),
+            )),
+
+            // Event: Status changed
+            'evt_status_changed__client' => new BooleanField(array(
+                'label'   => 'Status changed → notify customer',
+                'default' => true,
+                'configuration' => array('desc' => 'Customer gets a ping when the ticket moves between statuses (Open / Resolved / Closed / etc.).'),
+            )),
+            'evt_status_changed__admin' => new BooleanField(array(
+                'label'   => 'Status changed → notify admins',
+                'default' => false,
+                'configuration' => array('desc' => 'Off by default — usually only useful for ops dashboards.'),
+            )),
+
+            // Event: Assignment changed (no client side — internal ops)
+            'evt_assignment_changed__admin' => new BooleanField(array(
+                'label'   => 'Assignment changed → notify admins',
+                'default' => false,
+                'configuration' => array('desc' => 'Admins are pinged when a ticket is assigned or reassigned to a staff member or team. Off by default.'),
             )),
 
             // ─── Section: Templates ─────────────────────────────────────────

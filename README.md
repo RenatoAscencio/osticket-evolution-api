@@ -14,15 +14,19 @@ osTicket plugin that sends **WhatsApp** notifications via [Evolution API](https:
 
 - **Send to clients and admins independently.** End users get messages on their WhatsApp; admins receive them on a configurable list of numbers (one or many).
 - **Pre-flight WhatsApp check.** Before sending to a client, the plugin asks Evolution API whether the number exists on WhatsApp — and caches the answer. No more wasted sends or weird delivery errors.
-- **Per-event toggles.** Choose exactly which events fire a notification:
-  - Ticket created
-  - Client/user reply on a ticket
-  - Staff reply on a ticket
-  - Status changed (open / closed / resolved)
-  - Assignment changed
+- **Per-event-per-audience matrix.** Independent toggle for each combination, e.g. "Ticket created → notify customer ON, → notify admins ON" vs "Status changed → notify customer ON, → notify admins OFF":
+  - Ticket created → customer / admin
+  - Customer reply → admin
+  - Staff reply → customer / admin
+  - Status changed → customer / admin
+  - Assignment changed → admin
+- **Per-customer opt-in (privacy).** Optional: add a checkbox to the user form so each customer can toggle WhatsApp notifications themselves from their osTicket profile. See [docs/user-opt-in.md](./docs/user-opt-in.md).
 - **Dual templates.** Each event has separate message templates for client and admin audiences, so the tone and content can differ.
 - **Phone normalization.** Accepts any format users enter (spaces, hyphens, `+`, parentheses, leading zeros, national trunk prefixes) and normalizes to E.164 digits-only form.
+- **Credentials masked.** API key and Sentry DSN are `PasswordField`s — never visible in the admin UI after saving.
+- **PII redaction in logs.** Phone numbers and message bodies are masked/truncated in the PHP error log even with verbose logging on. Safe for shared hosting.
 - **Optional Sentry integration.** Plugin errors — and optionally every PHP error in osTicket — can be reported to your Sentry project for triage. No Composer required (uses a minimal envelope client).
+- **Security-reviewed.** See [SECURITY.md](./SECURITY.md) for the threat model, trust boundaries, and accepted risks.
 - **Designed for upstream PR.** Code style and license (GPL-2.0) match the official `osTicket/osTicket-plugins` repo so it can be contributed back.
 
 ---
